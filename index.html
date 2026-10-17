@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wildfire Cellular Automata Spread Canvas</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-white min-h-screen">
+<script>
+function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+const COLS=80, ROWS=60;
+const EMPTY=0, TREE=1, BURNING=2, BURNED=3;
+const BURN_STEPS=3; // steps a cell burns before becoming ash
+
+let grid=[], burnTimer=[];
+let running=false, stepMode=false;
+let intervalId=null;
+let windDir='N', windSpeed=3, humidity=30, treeDensity=60;
+let tool='fire'; // fire | break
+let isDragging=false;
+let stats={burning:0,burned:0,trees:0,totalTrees:0};
+
+// Wind direction vectors
+const WIND_VEC={
+  N:[0,-1], S:[0,1], E:[1,0], W:[-1,0],
+  NE:[1,-1], NW:[-1,-1], SE:[1,1], SW:[-1,1]
+};
+
+function initGrid(){
+  grid=Array.from({length:ROWS},()=>Array(COLS).fill(EMPTY));
+  burnTimer=Array.from({length:ROWS},()=>Array(COLS).fill(0));
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    if(Math.random()*100<treeDensity) grid[r][c]=TREE;
+  }
+  stats.totalTrees=grid.flat().filter(v=>v===TREE).length;
+  updateStats(); drawGrid();
+}
+
+function stepSim(){
+  const newGrid=grid.map(row=>[...row]);
+  const newTimer=burnTimer.map(row=>[...row]);
+  const wv=WIND_VEC[windDir]||[0,-1];
+
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    if(grid[r][c]===BURNING){
+      newTimer[r][c]--;
+      if(newTimer[r][c]<=0) newGrid[r][c]=BURNED;
+      // Try to spread to neighbors
+      const neighbors=[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+      neighbors.forEach(([dr,dc])=>{
+        const nr=r+dr, nc=c+dc;
+        if(nr<0||nr>=ROWS||nc<0||nc>=COLS) return;
+        if(grid[nr][nc]!==TREE) return;
+        // Spread probability
+        let prob=0.3*(1-humidity/100);
+        // Wind bonus: if neighbor is downwind
+        const dot=dr*wv[1]+dc*wv[0];
+        if(dot>0) prob+=windSpeed*0.06;
+        else if(dot<0) prob-=0.1;
+        prob=Math.max(0.01, Math.min(0.99, prob));
+        if(Math.random()<prob){
+          newGrid[nr][nc]=BURNING;
+          newTimer[nr][nc]=BURN_STEPS+Math.floor(Math.random()*3);
+        }
+      });
+    }
+  }
+  grid=newGrid; burnTimer=newTimer;
+  updateStats(); drawGrid();
+}
+
+function updateStats(){
+  let burning=0,burned=0,trees=0;
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    if(grid[r][c]===BURNING) burning++;
+    else if(grid[r][c]===BURNED) burned++;
+    else if(grid[r][c]===TREE) trees++;
+  }
+  stats={burning,burned,trees,totalTrees:stats.totalTrees||trees+burning+burned};
+  const el=document.getElementById('stats');
+  if(el) el.innerHTML=`
+    <div class="flex gap-4 text-sm flex-wrap">
+      <span>🔥 Burning: <strong class="text-orange-400">${burning}</strong></span>
+      <span>⬛ Burned: <strong class="text-gray-400">${burned}</strong></span>
+      <span>🌲 Remaining: <strong class="text-green-400">${trees}</strong></span>
+      <span>📊 Forest: <strong class="text-blue-300">${stats.totalTrees?Math.round(trees/stats.totalTrees*100):100}%</strong></span>
+    </div>`;
+  if(running && burning===0 && burned>0){ stopSim(); }
+}
+
+function drawGrid(){
+  const canvas=document.getElementById('cvs');
+  if(!canvas) return;
+  const ctx=canvas.getContext('2d');
+  const cw=canvas.width/COLS, ch=canvas.height/ROWS;
+
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    const v=grid[r][c];
+    if(v===EMPTY) ctx.fillStyle='#c8b882';
+    else if(v===TREE){
+      const shade=180+Math.floor(Math.random()*40);
+      ctx.fillStyle=`rgb(0,${shade},50)`;
+    }
+    else if(v===BURNING){
+      const t=burnTimer[r][c];
+      ctx.fillStyle=t>3?'#ff6600':'#ff3300';
+    }
+    else ctx.fillStyle='#1a1a1a';
+    ctx.fillRect(c*cw, r*ch, cw+0.5, ch+0.5);
+  }
+}
+
+function startSim(){
+  if(running) return;
+  running=true;
+  document.getElementById('playBtn').textContent='⏸ Pause';
+  intervalId=setInterval(stepSim,120);
+}
+function stopSim(){
+  running=false;
+  clearInterval(intervalId);
+  document.getElementById('playBtn').textContent='▶ Play';
+}
+function togglePlay(){
+  if(running) stopSim(); else startSim();
+}
+function doStep(){ if(!running) stepSim(); }
+function resetSim(){ stopSim(); initGrid(); }
+
+function canvasClick(e, isMove){
+  const canvas=document.getElementById('cvs');
+  const rect=canvas.getBoundingClientRect();
+  let cx,cy;
+  if(e.touches){cx=e.touches[0].clientX;cy=e.touches[0].clientY;}
+  else{cx=e.clientX;cy=e.clientY;}
+  const c=Math.floor((cx-rect.left)/rect.width*COLS);
+  const r=Math.floor((cy-rect.top)/rect.height*ROWS);
+  if(r<0||r>=ROWS||c<0||c>=COLS) return;
+  if(tool==='fire'){
+    if(grid[r][c]===TREE){
+      grid[r][c]=BURNING;
+      burnTimer[r][c]=BURN_STEPS+2;
+      drawGrid(); updateStats();
+    }
+  } else {
+    // Firebreak: clear 3x3 area
+    for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
+      const nr=r+dr,nc=c+dc;
+      if(nr>=0&&nr<ROWS&&nc>=0&&nc<COLS&&grid[nr][nc]===TREE) grid[nr][nc]=EMPTY;
+    }
+    drawGrid();
+  }
+}
+
+function setupCanvas(){
+  const canvas=document.getElementById('cvs');
+  if(!canvas) return;
+  const cont=canvas.parentElement;
+  const w=Math.min(cont.clientWidth-8, 700);
+  canvas.width=w; canvas.height=Math.round(w*(ROWS/COLS));
+  drawGrid();
+}
+window.addEventListener('resize',()=>{setupCanvas();});
+</script>
+
+<div class="max-w-4xl mx-auto p-4">
+  <h1 class="text-2xl font-bold text-orange-300 mb-4">🔥 Wildfire Cellular Automata</h1>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-2">
+      <div class="bg-gray-900 rounded-2xl p-2 mb-3">
+        <canvas id="cvs" class="rounded-xl w-full block cursor-crosshair"
+          onmousedown="isDragging=true;canvasClick(event)"
+          onmousemove="if(isDragging&&tool==='break')canvasClick(event,true)"
+          onmouseup="isDragging=false"
+          ontouchstart="canvasClick(event)" ontouchmove="if(tool==='break')canvasClick(event)"></canvas>
+      </div>
+      <div id="stats" class="mb-3 text-sm"></div>
+      <div class="flex flex-wrap gap-2">
+        <button id="playBtn" onclick="togglePlay()" class="bg-orange-700 hover:bg-orange-600 px-4 py-2 rounded-lg font-semibold">▶ Play</button>
+        <button onclick="doStep()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg">Step</button>
+        <button onclick="resetSim()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg">Reset</button>
+        <button onclick="tool='fire';document.getElementById('toolLabel').textContent='🔥 Fire'" class="bg-red-800 hover:bg-red-700 px-3 py-2 rounded-lg text-sm">🔥 Fire Tool</button>
+        <button onclick="tool='break';document.getElementById('toolLabel').textContent='🪓 Firebreak'" class="bg-yellow-800 hover:bg-yellow-700 px-3 py-2 rounded-lg text-sm">🪓 Firebreak</button>
+        <span id="toolLabel" class="flex items-center px-3 text-sm text-gray-400">🔥 Fire</span>
+      </div>
+    </div>
+    <div class="flex flex-col gap-3">
+      <div class="bg-gray-800 rounded-xl p-4">
+        <label class="block text-sm text-gray-400 mb-1">Wind Direction</label>
+        <div class="grid grid-cols-3 gap-1 text-xs text-center mb-1">
+          <button onclick="windDir='NW';document.getElementById('wdLabel').textContent='NW'" class="bg-gray-700 hover:bg-blue-700 p-1 rounded">NW</button>
+          <button onclick="windDir='N';document.getElementById('wdLabel').textContent='N'" class="bg-gray-700 hover:bg-blue-700 p-1 rounded">N</button>
+          <button onclick="windDir='NE';document.getElementById('wdLabel').textContent='NE'" class="bg-gray-700 hover:bg-blue-700 p-1 rounded">NE</button>
+          <button onclick="windDir='W';document.getElementById('wdLabel').textContent='W'" class="bg-gray-700 hover:bg-blue-700 p-1 rounded">W</button>
+          <span class="bg-blue-900 p-1 rounded font-bold text-white text-center" id="wdLabel">N</span>
+          <button onclick="windDir='E';document.getElementById('wdLabel').textContent='E'" class="bg-gray-700 hover:bg-blue-700 p-1 rounded">E</button>
+          <button onclick="windDir='SW';document.getElementById('wdLabel').textContent='SW'" class="bg-gray-700 hover:bg-blue-700 p-1 rounded">SW</button>
+          <button onclick="windDir='S';document.getElementById('wdLabel').textContent='S'" class="bg-gray-700 hover:bg-blue-700 p-1 rounded">S</button>
+          <button onclick="windDir='SE';document.getElementById('wdLabel').textContent='SE'" class="bg-gray-700 hover:bg-blue-700 p-1 rounded">SE</button>
+        </div>
+      </div>
+      <div class="bg-gray-800 rounded-xl p-4 flex flex-col gap-3">
+        <div>
+          <label class="text-sm text-gray-400">Wind Speed: <span id="wsVal" class="text-yellow-300 font-bold">3</span></label>
+          <input type="range" min="0" max="10" value="3" oninput="windSpeed=+this.value;document.getElementById('wsVal').textContent=windSpeed" class="w-full accent-blue-500">
+        </div>
+        <div>
+          <label class="text-sm text-gray-400">Humidity: <span id="humVal" class="text-cyan-300 font-bold">30</span>%</label>
+          <input type="range" min="0" max="100" value="30" oninput="humidity=+this.value;document.getElementById('humVal').textContent=humidity" class="w-full accent-cyan-500">
+        </div>
+        <div>
+          <label class="text-sm text-gray-400">Tree Density: <span id="tdVal" class="text-green-300 font-bold">60</span>%</label>
+          <input type="range" min="10" max="95" value="60" oninput="treeDensity=+this.value;document.getElementById('tdVal').textContent=treeDensity" class="w-full accent-green-500">
+        </div>
+        <button onclick="stopSim();treeDensity=+document.getElementById('tdVal')?.value||60;resetSim()" class="bg-green-800 hover:bg-green-700 py-2 rounded-lg text-sm font-semibold">Apply & Reset</button>
+      </div>
+      <div class="bg-gray-800/50 rounded-xl p-3 text-xs text-gray-400">
+        <div class="mb-1 font-semibold text-gray-300">Legend</div>
+        <div class="flex flex-col gap-1">
+          <span><span class="inline-block w-3 h-3 rounded" style="background:#c8b882"></span> Empty</span>
+          <span><span class="inline-block w-3 h-3 rounded bg-green-600"></span> Tree</span>
+          <span><span class="inline-block w-3 h-3 rounded bg-orange-500"></span> Burning</span>
+          <span><span class="inline-block w-3 h-3 rounded bg-gray-800 border border-gray-600"></span> Burned</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+window.addEventListener('load',()=>{setupCanvas();initGrid();});
+</script>
+</body>
+</html>
